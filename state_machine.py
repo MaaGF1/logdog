@@ -1,7 +1,7 @@
 """
 Watchdog State Machine for complex rule management
 """
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Set
 from datetime import datetime
 import json
 from dataclasses import dataclass, field
@@ -34,6 +34,11 @@ class WatchdogStateMachine:
         self.states: Dict[str, WatchdogState] = {}
         self.active_states: Dict[str, WatchdogState] = {}
         self.state_history: List[Tuple[str, str, datetime]] = []  # (rule_name, event, timestamp)
+        self.completion_node_names: Set[str] = set()
+        
+    def set_completion_nodes(self, node_names: Set[str]):
+        """Set the list of known completion nodes"""
+        self.completion_node_names = node_names
     
     def add_state(self, state: WatchdogState):
         """Add a new state to the state machine"""
@@ -53,6 +58,7 @@ class WatchdogStateMachine:
         # If already active, reset the timer
         if state.is_active:
             state.last_activation_time = current_time
+            state.current_transition_index = 0
             self.state_history.append((state_name, f"RESET by {trigger_node}", current_time))
             return True
         
@@ -81,15 +87,31 @@ class WatchdogStateMachine:
         if node_name == current_transition.target_node:
             current_time = datetime.now()
             
-            # Move to next transition or complete the rule
-            state.current_transition_index += 1
+            # Check if this is the last transition in the chain
+            if state.current_transition_index >= len(state.transitions) - 1:
+                # LOGIC UPDATE: Handle Loops and Explicit Completions
+                
+                # Case 1: Explicit Completion Node -> Finish and Remove
+                if node_name in self.completion_node_names:
+                    self._deactivate_state(state_name, f"COMPLETED by {node_name}")
+                    return (True, f"Rule '{state_name}' completed successfully at explicit completion node")
+                
+                # Case 2: Start Node == End Node (Loop) -> Reset and Keep Active
+                elif node_name == state.start_node:
+                    state.current_transition_index = 0
+                    state.last_activation_time = current_time
+                    self.state_history.append((state_name, f"LOOP RESET by {node_name}", current_time))
+                    return (False, f"Rule '{state_name}' loop reset by start/end node match")
+                
+                # Case 3: Default Behavior (Linear Rule) -> Finish and Remove
+                # For backward compatibility with tests like Begin->Mid where Mid is not a completion node
+                else:
+                    self._deactivate_state(state_name, f"COMPLETED by {node_name}")
+                    return (True, f"Rule '{state_name}' completed successfully (Implicit)")
             
-            if state.current_transition_index >= len(state.transitions):
-                # All transitions completed
-                self._deactivate_state(state_name, f"COMPLETED by {node_name}")
-                return (True, f"Rule '{state_name}' completed successfully")
             else:
                 # Move to next transition
+                state.current_transition_index += 1
                 state.last_activation_time = current_time
                 next_transition = state.transitions[state.current_transition_index]
                 self.state_history.append((state_name, f"TRANSITION to {next_transition.target_node}", current_time))
@@ -114,6 +136,11 @@ class WatchdogStateMachine:
                 self._deactivate_state(state_name, f"TIMEOUT after {elapsed_ms:.1f}ms")
         
         return timeouts
+    
+    def reset_all_states(self):
+        """Reset all active states (used by entry nodes)"""
+        for state_name in list(self.active_states.keys()):
+            self._deactivate_state(state_name, "RESET by entry node")
     
     def _deactivate_state(self, state_name: str, reason: str):
         """Deactivate a state"""

@@ -4,57 +4,74 @@ Watchdog Configuration Management with State Machine Support
 import os
 import re
 import json
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union, Set
 from datetime import datetime
 
-# Import state machine components
 from state_machine import WatchdogStateMachine, WatchdogState, WatchdogTransition
 
+# Notification Event Constants
+NOTIFY_STATE_ACTIVATED = 'StateActivated'
+NOTIFY_STATE_COMPLETED = 'StateCompleted'
+NOTIFY_STATE_TIMEOUT = 'Timeout'
+NOTIFY_STATE_INTERRUPTED = 'StateInterrupted'
+NOTIFY_ENTRY_DETECTED = 'EntryDetected'
 
-class WatchdogRule:
-    """Legacy single watchdog rule for backward compatibility"""
-    
-    def __init__(self, name: str, start_node: str, timeout_ms: int, end_node: str, description: str = ""):
+# Default enabled events if not specified
+DEFAULT_NOTIFY_EVENTS = {
+    NOTIFY_STATE_ACTIVATED,
+    NOTIFY_STATE_COMPLETED,
+    NOTIFY_STATE_TIMEOUT,
+    NOTIFY_STATE_INTERRUPTED,
+    NOTIFY_ENTRY_DETECTED
+}
+
+class EntryNode:
+    def __init__(self, name: str, node_name: str, description: str = ""):
         self.name = name
-        self.start_node = start_node
-        self.timeout_ms = timeout_ms
-        self.end_node = end_node
+        self.node_name = node_name
         self.description = description
-        self.last_start_time: Optional[datetime] = None
-        self.is_active = False
     
     def __str__(self):
-        return f"WatchdogRule({self.name}: {self.start_node} -> {self.end_node}, {self.timeout_ms}ms)"
+        return f"EntryNode({self.name}: {self.node_name})"
 
+class CompletionNode:
+    def __init__(self, name: str, node_name: str, description: str = ""):
+        self.name = name
+        self.node_name = node_name
+        self.description = description
+
+    def __str__(self):
+        return f"CompletionNode({self.name}: {self.node_name})"
 
 class WatchdogConfig:
-    """Enhanced watchdog configuration manager with state machine support"""
+    """Watchdog configuration manager with state machine support"""
     
     def __init__(self):
-        # Legacy rules for backward compatibility
-        self.rules: Dict[str, WatchdogRule] = {}
-        
-        # New state machine for complex rules
         self.state_machine = WatchdogStateMachine()
+        self.entry_nodes: Dict[str, EntryNode] = {}
+        self.completion_nodes: Dict[str, CompletionNode] = {}
         
+        # 修复：默认正则同步为严格模式
         self.log_patterns = {
-            'node_start': r'\[.*?\]\[.*?\]\[.*?\]\[.*?\]\[.*?\]\[.*?\] \[node_name=(.*?)\]',
-            'node_complete': r'\[.*?\]\[.*?\]\[.*?\]\[.*?\]\[.*?\]\[.*?\] \[node_name=(.*?)\].*complete',
+            'node_start': r'\[pipeline_data\.name=(.*?)\]\s*\|\s*enter',
+            'node_complete': r'\[pipeline_data\.name=(.*?)\]\s*\|\s*complete',
         }
         
-        # External notification config
         self.bot_token = None
         self.chat_id = None
         self.webhook_key = None
         self.default_ext_notify = None
         
-        # Monitoring settings
+        # Set of events that should trigger a notification
+        # Defaults to all events for backward compatibility
+        self.notify_events: Set[str] = DEFAULT_NOTIFY_EVENTS.copy()
+        self._custom_notify_configured = False
+        
         self.log_file_path = None
         self.monitor_interval = 1.0
         self.enable_stdout_capture = False
         
     def load_config(self, config_path: str) -> bool:
-        """Load watchdog configuration from file"""
         if not os.path.exists(config_path):
             print(f"Watchdog config file not found: {config_path}")
             return False
@@ -62,20 +79,14 @@ class WatchdogConfig:
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
                 current_section = None
-                
                 for line_num, line in enumerate(f, 1):
                     line = line.strip()
-                    
-                    # Skip empty lines and comments
                     if not line or line.startswith('#'):
                         continue
-                    
-                    # Section headers
                     if line.startswith('[') and line.endswith(']'):
                         current_section = line[1:-1].lower()
                         continue
                     
-                    # Key-value pairs
                     if '=' in line:
                         key, value = line.split('=', 1)
                         key = key.strip()
@@ -85,19 +96,27 @@ class WatchdogConfig:
                             self._parse_notification_config(key, value)
                         elif current_section == 'monitoring':
                             self._parse_monitoring_config(key, value)
-                        elif current_section == 'rules':
-                            self._parse_rule_config(key, value, line_num)
                         elif current_section == 'states':
                             self._parse_state_config(key, value, line_num)
+                        elif current_section == 'entries':
+                            self._parse_entry_config(key, value, line_num)
+                        elif current_section == 'completed':
+                            self._parse_completed_config(key, value, line_num)
+                        elif current_section == 'rules':
+                            self._parse_legacy_as_state_config(key, value, line_num)
             
-            print(f"Loaded {len(self.rules)} legacy rules and {len(self.state_machine.states)} state machine rules")
+            completion_node_names = {c.node_name for c in self.completion_nodes.values()}
+            self.state_machine.set_completion_nodes(completion_node_names)
             
-            for rule_name, rule in self.rules.items():
-                print(f"  Legacy - {rule}")
+            print(f"Loaded {len(self.state_machine.states)} state machine rules")
+            print(f"Loaded {len(self.entry_nodes)} entry nodes")
+            print(f"Loaded {len(self.completion_nodes)} completion nodes")
             
-            for state_name, state in self.state_machine.states.items():
-                print(f"  State - {state_name}: {state.start_node} -> {len(state.transitions)} transitions")
-            
+            if self._custom_notify_configured:
+                print(f"Notification filter enabled: {', '.join(self.notify_events)}")
+            else:
+                print("Notification filter: Default (All events)")
+                
             return True
             
         except Exception as e:
@@ -107,7 +126,6 @@ class WatchdogConfig:
             return False
     
     def _parse_notification_config(self, key: str, value: str):
-        """Parse notification configuration"""
         if key == 'Bot_Token':
             self.bot_token = value if value else None
         elif key == 'Chat_ID':
@@ -116,9 +134,45 @@ class WatchdogConfig:
             self.webhook_key = value if value else None
         elif key == 'Default_ExtNotify':
             self.default_ext_notify = value.lower() if value else None
-    
+        elif key == 'NotifyWhen':
+            self._parse_notify_when(value)
+
+    def _parse_notify_when(self, value: str):
+        """Parse the NotifyWhen={...} configuration"""
+        if not value:
+            return
+        
+        # Remove braces if present
+        if value.startswith('{') and value.endswith('}'):
+            value = value[1:-1]
+        
+        # Split by comma
+        parts = [p.strip() for p in value.split(',')]
+        if not parts:
+            return
+            
+        # Reset to empty set since user provided specific config
+        self.notify_events = set()
+        self._custom_notify_configured = True
+        
+        valid_events = {
+            NOTIFY_STATE_ACTIVATED.lower(): NOTIFY_STATE_ACTIVATED,
+            NOTIFY_STATE_COMPLETED.lower(): NOTIFY_STATE_COMPLETED,
+            NOTIFY_STATE_TIMEOUT.lower(): NOTIFY_STATE_TIMEOUT,
+            NOTIFY_STATE_INTERRUPTED.lower(): NOTIFY_STATE_INTERRUPTED,
+            NOTIFY_ENTRY_DETECTED.lower(): NOTIFY_ENTRY_DETECTED
+        }
+        
+        for part in parts:
+            # Handle potential legacy "RuleActivated" etc mapping if needed, 
+            # but for now strictly follow the requested format
+            part_lower = part.lower()
+            if part_lower in valid_events:
+                self.notify_events.add(valid_events[part_lower])
+            else:
+                print(f"Warning: Unknown notification event type: {part}")
+
     def _parse_monitoring_config(self, key: str, value: str):
-        """Parse monitoring configuration"""
         if key == 'Log_File_Path':
             self.log_file_path = value if value else None
         elif key == 'Monitor_Interval':
@@ -131,131 +185,116 @@ class WatchdogConfig:
         elif key == 'Enable_Stdout_Capture':
             self.enable_stdout_capture = value.lower() in ['true', '1', 'yes', 'on']
     
-    def _parse_rule_config(self, key: str, value: str, line_num: int):
-        """Parse legacy watchdog rule configuration"""
-        # Format: RuleName={StartNode, TimeoutMS, EndNode, Description}
+    def _parse_legacy_as_state_config(self, key: str, value: str, line_num: int):
         try:
-            # Remove curly braces
             if value.startswith('{') and value.endswith('}'):
                 value = value[1:-1]
-            
-            # Split by comma
             parts = [part.strip() for part in value.split(',')]
-            
             if len(parts) < 3:
-                print(f"Warning: Invalid rule format at line {line_num}: {key}={value}")
                 return
-            
             start_node = parts[0]
             timeout_ms = int(parts[1])
             end_node = parts[2]
             description = parts[3] if len(parts) > 3 else ""
-            
-            rule = WatchdogRule(key, start_node, timeout_ms, end_node, description)
-            self.rules[key] = rule
-            
+            transition = WatchdogTransition(end_node, timeout_ms, f"Transition to {end_node}")
+            state = WatchdogState(name=key, start_node=start_node, transitions=[transition], description=description)
+            self.state_machine.add_state(state)
         except (ValueError, IndexError) as e:
-            print(f"Warning: Failed to parse rule at line {line_num}: {key}={value}, error: {e}")
+            print(f"Warning: Failed to parse legacy rule at line {line_num}: {key}={value}, error: {e}")
     
     def _parse_state_config(self, key: str, value: str, line_num: int):
-        """
-        Parse new state machine rule configuration
-        Format: RuleName={StartNode, TimeoutMS_1, EndNode_1, TimeoutMS_2, EndNode_2, ..., Description}
-        """
         try:
-            # Remove curly braces
             if value.startswith('{') and value.endswith('}'):
                 value = value[1:-1]
-            
-            # Split by comma
             parts = [part.strip() for part in value.split(',')]
-            
             if len(parts) < 3:
-                print(f"Warning: Invalid state format at line {line_num}: {key}={value}")
                 return
-            
             start_node = parts[0]
-            
-            # Parse transitions: TimeoutMS_1, EndNode_1, TimeoutMS_2, EndNode_2, ...
             transitions = []
+            description = ""
             i = 1
-            while i < len(parts) - 1:  # -1 to leave room for description
+            while i < len(parts):
                 try:
                     timeout_ms = int(parts[i])
                     if i + 1 < len(parts):
                         end_node = parts[i + 1]
-                        
-                        # Check if next part is another timeout or description
+                        has_next_timeout = False
                         if i + 2 < len(parts):
                             try:
-                                # Try to parse next part as timeout
-                                next_timeout = int(parts[i + 2])
-                                # It's a timeout, so current end_node is valid
-                                transitions.append(WatchdogTransition(end_node, timeout_ms, f"Transition to {end_node}"))
-                                i += 2
+                                int(parts[i + 2])
+                                has_next_timeout = True
                             except ValueError:
-                                # Next part is not a timeout, so it's description
-                                transitions.append(WatchdogTransition(end_node, timeout_ms, f"Final transition to {end_node}"))
-                                break
-                        else:
-                            # Last transition
-                            transitions.append(WatchdogTransition(end_node, timeout_ms, f"Final transition to {end_node}"))
+                                pass
+                        transitions.append(WatchdogTransition(end_node, timeout_ms, f"Transition to {end_node}"))
+                        i += 2
+                        if not has_next_timeout and i < len(parts):
+                            description = ', '.join(parts[i:])
                             break
                     else:
                         break
                 except ValueError:
-                    print(f"Warning: Invalid timeout value at line {line_num}: {parts[i]}")
+                    description = ', '.join(parts[i:])
                     break
-            
-            # Get description (last non-timeout part)
-            description = ""
-            if len(parts) > 2:
-                # Find the description (should be the last part that's not part of timeout/node pairs)
-                desc_start_idx = 1 + len(transitions) * 2
-                if desc_start_idx < len(parts):
-                    description = parts[desc_start_idx]
-            
             if not transitions:
-                print(f"Warning: No valid transitions found at line {line_num}: {key}={value}")
                 return
-            
-            # Create state
-            state = WatchdogState(
-                name=key,
-                start_node=start_node,
-                transitions=transitions,
-                description=description
-            )
-            
+            state = WatchdogState(name=key, start_node=start_node, transitions=transitions, description=description)
             self.state_machine.add_state(state)
-            
         except (ValueError, IndexError) as e:
             print(f"Warning: Failed to parse state at line {line_num}: {key}={value}, error: {e}")
     
-    def get_rule(self, name: str) -> Optional[WatchdogRule]:
-        """Get legacy watchdog rule by name"""
-        return self.rules.get(name)
+    def _parse_entry_config(self, key: str, value: str, line_num: int):
+        try:
+            if value.startswith('{') and value.endswith('}'):
+                value = value[1:-1]
+            parts = [part.strip() for part in value.split(',')]
+            if len(parts) < 1:
+                return
+            node_name = parts[0]
+            description = parts[1] if len(parts) > 1 else ""
+            entry = EntryNode(key, node_name, description)
+            self.entry_nodes[key] = entry
+        except (ValueError, IndexError) as e:
+            print(f"Warning: Failed to parse entry at line {line_num}: {key}={value}, error: {e}")
+
+    def _parse_completed_config(self, key: str, value: str, line_num: int):
+        try:
+            if value.startswith('{') and value.endswith('}'):
+                value = value[1:-1]
+            parts = [part.strip() for part in value.split(',')]
+            if len(parts) < 1:
+                return
+            node_name = parts[0]
+            description = parts[1] if len(parts) > 1 else ""
+            completion = CompletionNode(key, node_name, description)
+            self.completion_nodes[key] = completion
+        except (ValueError, IndexError) as e:
+            print(f"Warning: Failed to parse completed at line {line_num}: {key}={value}, error: {e}")
     
     def get_state(self, name: str) -> Optional[WatchdogState]:
-        """Get state machine rule by name"""
         return self.state_machine.states.get(name)
     
-    def get_all_rules(self) -> List[WatchdogRule]:
-        """Get all legacy watchdog rules"""
-        return list(self.rules.values())
+    def get_entry(self, name: str) -> Optional[EntryNode]:
+        return self.entry_nodes.get(name)
     
-    def get_all_states(self) -> List[WatchdogState]:
-        """Get all state machine rules"""
-        return list(self.state_machine.states.values())
+    def get_completion(self, name: str) -> Optional[CompletionNode]:
+        return self.completion_nodes.get(name)
+    
+    def is_entry_node(self, node_name: str) -> Optional[EntryNode]:
+        for entry in self.entry_nodes.values():
+            if entry.node_name == node_name:
+                return entry
+        return None
+    
+    def is_completion_node(self, node_name: str) -> Optional[CompletionNode]:
+        for comp in self.completion_nodes.values():
+            if comp.node_name == node_name:
+                return comp
+        return None
     
     def is_notification_configured(self) -> bool:
-        """Check if notification is configured"""
-        telegram_ok = self.bot_token and self.chat_id
-        wechat_ok = self.webhook_key
-        return telegram_ok or wechat_ok
+        return (self.bot_token and self.chat_id) or (self.webhook_key is not None)
     
     def get_available_notifiers(self) -> List[str]:
-        """Get available notification platforms"""
         available = []
         if self.bot_token and self.chat_id:
             available.append('telegram')
@@ -263,14 +302,14 @@ class WatchdogConfig:
             available.append('wechat')
         return available
 
+    def should_notify(self, event_type: str) -> bool:
+        """Check if the specific event type is enabled for notification"""
+        return event_type in self.notify_events
 
-# Global config instance
 watchdog_config = WatchdogConfig()
 
 def load_watchdog_config(config_path: str) -> bool:
-    """Load watchdog configuration"""
     return watchdog_config.load_config(config_path)
 
 def get_watchdog_config() -> WatchdogConfig:
-    """Get global watchdog configuration"""
     return watchdog_config

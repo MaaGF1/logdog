@@ -1,5 +1,5 @@
 """
-Enhanced log monitoring system with state machine support
+Log monitoring system with state machine support
 """
 import re
 import time
@@ -15,13 +15,13 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-from config import WatchdogConfig, WatchdogRule
+from config import WatchdogConfig, EntryNode
 from notifier import WatchdogNotifier
 from state_machine import WatchdogStateMachine, WatchdogState
 
 
-class EnhancedLogMonitor:
-    """Enhanced log monitor with state machine support"""
+class LogMonitor:
+    """Log monitor with state machine support"""
     
     def __init__(self, config: WatchdogConfig):
         self.config = config
@@ -33,15 +33,22 @@ class EnhancedLogMonitor:
         self.stop_event = threading.Event()
         
         # Log patterns for node detection
+        # 修复：严格匹配 [pipeline_data.name=...] | enter
         self.node_patterns = {
-            'start': re.compile(r'\[.*?\]\[.*?\]\[.*?\] \[node_name=(.*?)\].*start', re.IGNORECASE),
-            'complete': re.compile(r'\[.*?\]\[.*?\] \[node_name=(.*?)\].*complete', re.IGNORECASE),
-            'general': re.compile(r'\[.*?\] \[node_name=(.*?)\]', re.IGNORECASE)
+            # 优先级最高：严格匹配执行进入点
+            # 格式：[pipeline_data.name=节点名] | enter
+            'start': re.compile(r'\[pipeline_data\.name=(.*?)\]\s*\|\s*enter', re.IGNORECASE),
+            
+            # 备用：如果日志中有显式的 complete (虽然你提供的日志里 leave 没带名字，但保留以防万一)
+            'complete': re.compile(r'\[pipeline_data\.name=(.*?)\]\s*\|\s*complete', re.IGNORECASE),
+            
+            # 兼容旧格式或备用格式 (仅当上面匹配不到时使用)
+            # 这里的正则排除了 list=[...] 和 result.name=... 这种干扰项
+            'general': re.compile(r'\[(?:node_name|pipeline_data\.name)=(.*?)\](?!.*(?:list=|result\.name=))', re.IGNORECASE)
         }
         
         # File monitoring
         self.log_file: Optional[TextIO] = None
-        self.log_file_position = 0
     
     def start_monitoring(self) -> bool:
         """Start log monitoring"""
@@ -63,7 +70,7 @@ class EnhancedLogMonitor:
         )
         self.monitor_thread.start()
         
-        print("Enhanced watchdog log monitor started")
+        print("Watchdog log monitor started")
         return True
     
     def stop_monitoring(self) -> bool:
@@ -81,7 +88,7 @@ class EnhancedLogMonitor:
         self._cleanup_log_source()
         self.is_running = False
         
-        print("Enhanced watchdog log monitor stopped")
+        print("Watchdog log monitor stopped")
         return True
     
     def _prepare_log_source(self) -> bool:
@@ -89,10 +96,8 @@ class EnhancedLogMonitor:
         if self.config.log_file_path:
             try:
                 if os.path.exists(self.config.log_file_path):
-                    self.log_file = open(self.config.log_file_path, 'r', encoding='utf-8')
-                    # Move to end of file to only read new content
+                    self.log_file = open(self.config.log_file_path, 'r', encoding='utf-8', errors='ignore')
                     self.log_file.seek(0, os.SEEK_END)
-                    self.log_file_position = self.log_file.tell()
                     print(f"Monitoring log file: {self.config.log_file_path}")
                     return True
                 else:
@@ -101,11 +106,9 @@ class EnhancedLogMonitor:
             except Exception as e:
                 print(f"Failed to open log file: {e}")
                 return False
-        
         elif self.config.enable_stdout_capture:
             print("Stdout capture monitoring not yet implemented")
             return False
-        
         else:
             print("No log source configured")
             return False
@@ -121,7 +124,7 @@ class EnhancedLogMonitor:
     
     def _monitor_loop(self):
         """Main monitoring loop"""
-        print("Starting enhanced watchdog monitor loop...")
+        print("Starting Watchdog monitor loop...")
         
         while not self.stop_event.wait(self.config.monitor_interval):
             try:
@@ -131,7 +134,6 @@ class EnhancedLogMonitor:
                     for line in new_lines:
                         self._process_log_line(line.strip())
                 
-                # Check for timeouts (both legacy and state machine)
                 self._check_timeouts()
                 
             except Exception as e:
@@ -139,140 +141,116 @@ class EnhancedLogMonitor:
                 import traceback
                 traceback.print_exc()
         
-        print("Enhanced monitor loop ended")
+        print("Monitor loop ended")
     
     def _read_new_log_lines(self) -> List[str]:
-        """Read new lines from log source"""
+        """Read new lines from log source with rotation detection"""
         if not self.log_file:
             return []
         
+        lines = []
         try:
-            # Check if file has new content
-            current_position = self.log_file.tell()
-            self.log_file.seek(0, os.SEEK_END)
-            end_position = self.log_file.tell()
+            current_pos = self.log_file.tell()
+            current_size = os.fstat(self.log_file.fileno()).st_size
             
-            if end_position <= current_position:
-                return []
+            if current_size < current_pos:
+                print("[WARNING] Log file truncated detected, resetting pointer to beginning.")
+                self.log_file.seek(0)
             
-            # Read new content
-            self.log_file.seek(current_position)
-            new_content = self.log_file.read()
+            content = self.log_file.read()
             
-            if new_content:
-                lines = new_content.split('\n')
-                # Last line might be incomplete, put it back
-                if not new_content.endswith('\n') and len(lines) > 1:
-                    incomplete_line = lines[-1]
-                    lines = lines[:-1]
-                    self.log_file.seek(self.log_file.tell() - len(incomplete_line))
+            if content:
+                if not content.endswith('\n'):
+                    last_newline = content.rfind('\n')
+                    if last_newline != -1:
+                        bytes_to_rewind = len(content) - (last_newline + 1)
+                        self.log_file.seek(self.log_file.tell() - bytes_to_rewind)
+                        content = content[:last_newline + 1]
+                    else:
+                        self.log_file.seek(self.log_file.tell() - len(content))
+                        return []
                 
-                return [line for line in lines if line.strip()]
-            
+                lines = [line for line in content.split('\n') if line.strip()]
+                
         except Exception as e:
             print(f"Error reading log file: {e}")
+            self._cleanup_log_source()
+            self._prepare_log_source()
         
-        return []
+        return lines
     
     def _process_log_line(self, line: str):
         """Process a single log line"""
         if not line:
             return
         
-        # Try to extract node name from various patterns
+        # 优化：如果行里不包含 pipeline_data.name 或 node_name，直接跳过，节省正则性能
+        if 'pipeline_data.name' not in line and 'node_name' not in line:
+            return
+
         node_name = None
         
-        for pattern_name, pattern in self.node_patterns.items():
-            match = pattern.search(line)
+        # 优先匹配 start ( | enter )
+        match = self.node_patterns['start'].search(line)
+        if match:
+            node_name = match.group(1).strip()
+        else:
+            # 尝试匹配 complete
+            match = self.node_patterns['complete'].search(line)
             if match:
-                node_name = match.group(1)
-                break
+                node_name = match.group(1).strip()
+            else:
+                # 最后尝试 general，但通常 start 已经足够
+                match = self.node_patterns['general'].search(line)
+                if match:
+                    node_name = match.group(1).strip()
         
         if not node_name:
             return
         
-        print(f"[DEBUG] Detected node: {node_name}")
+        print(f"[DEBUG] Detected node execution: {node_name}")
         
-        # Check both legacy rules and state machine rules
-        self._check_legacy_rules(node_name, line)
+        # Check if this is an entry node first
+        entry_node = self.config.is_entry_node(node_name)
+        if entry_node:
+            self._handle_entry_node(entry_node, node_name, line)
+            return
+        
+        # Check state machine rules
         self._check_state_machine_rules(node_name, line)
     
-    def _check_legacy_rules(self, node_name: str, log_line: str):
-        """Check legacy watchdog rules"""
-        current_time = datetime.now()
+    def _handle_entry_node(self, entry: EntryNode, node_name: str, log_line: str):
+        """Handle entry node detection"""
+        print(f"[ENTRY] Entry node detected: {entry.name} ({node_name})")
         
-        for rule_name, rule in self.config.rules.items():
-            
-            # For same start_node and end_node rules
-            if rule.start_node == rule.end_node and node_name == rule.start_node:
-                if rule.is_active:
-                    # Reset the timer
-                    print(f"[LEGACY] Rule '{rule_name}' timer reset by node '{node_name}'")
-                    rule.last_start_time = current_time
-                else:
-                    # Start the watchdog timer
-                    print(f"[LEGACY] Rule '{rule_name}' timer started by node '{node_name}'")
-                    rule.is_active = True
-                    rule.last_start_time = current_time
-            
-            # For different start_node and end_node rules
-            elif rule.start_node != rule.end_node:
-                
-                # Check if this node starts a watchdog rule
-                if node_name == rule.start_node and not rule.is_active:
-                    print(f"[LEGACY] Rule '{rule_name}' activated by node '{node_name}'")
-                    rule.is_active = True
-                    rule.last_start_time = current_time
-                    self.notifier.send_rule_activated(rule_name, rule)
-                
-                # Check if this node completes a watchdog rule
-                elif node_name == rule.end_node and rule.is_active:
-                    elapsed_ms = (current_time - rule.last_start_time).total_seconds() * 1000
-                    print(f"[LEGACY] Rule '{rule_name}' completed by node '{node_name}' in {elapsed_ms:.1f}ms")
-                    self.notifier.send_rule_completed(rule_name, rule, elapsed_ms)
-                    
-                    # Reset rule state
-                    rule.is_active = False
-                    rule.last_start_time = None
+        active_states = self.config.state_machine.get_active_states()
+        
+        if active_states:
+            print(f"[ENTRY] Resetting {len(active_states)} active states due to entry node")
+            for state_name, state in active_states.items():
+                self.notifier.send_state_interrupted(state_name, state, node_name)
+        
+        self.config.state_machine.reset_all_states()
+        self.notifier.send_entry_detected(entry.name, entry, node_name)
+        self._check_state_machine_rules(node_name, log_line)
     
     def _check_state_machine_rules(self, node_name: str, log_line: str):
         """Check state machine rules"""
-        # Check if node triggers state activation
         for state_name, state in self.config.state_machine.states.items():
             if self.config.state_machine.activate_state(state_name, node_name):
                 print(f"[STATE] State '{state_name}' triggered by node '{node_name}'")
+                self.notifier.send_state_activated(state_name, state)
         
-        # Check if node triggers state transitions
         for state_name, state in self.config.state_machine.get_active_states().items():
             result = self.config.state_machine.check_transition(state_name, node_name)
             if result:
                 is_completed, message = result
                 print(f"[STATE] {message}")
-                
                 if is_completed:
-                    # Send completion notification for state machine rules
                     self.notifier.send_state_completed(state_name, state, node_name)
     
     def _check_timeouts(self):
-        """Check for timeout conditions in both legacy and state machine rules"""
-        current_time = datetime.now()
-        
-        # Check legacy rule timeouts
-        for rule_name, rule in self.config.rules.items():
-            if not rule.is_active or rule.last_start_time is None:
-                continue
-            
-            elapsed_ms = (current_time - rule.last_start_time).total_seconds() * 1000
-            
-            if elapsed_ms > rule.timeout_ms:
-                print(f"[LEGACY] TIMEOUT: Rule '{rule_name}' exceeded {rule.timeout_ms}ms (elapsed: {elapsed_ms:.1f}ms)")
-                self.notifier.send_timeout_alert(rule_name, rule, elapsed_ms)
-                
-                # Reset rule state
-                rule.is_active = False
-                rule.last_start_time = None
-        
-        # Check state machine timeouts
+        """Check for timeout conditions in state machine rules"""
         timeouts = self.config.state_machine.check_timeouts()
         for state_name, state, elapsed_ms in timeouts:
             print(f"[STATE] TIMEOUT: State '{state_name}' exceeded timeout (elapsed: {elapsed_ms}ms)")
@@ -280,16 +258,13 @@ class EnhancedLogMonitor:
     
     def get_status(self) -> Dict:
         """Get monitoring status"""
-        active_rules = [name for name, rule in self.config.rules.items() if rule.is_active]
         active_states = list(self.config.state_machine.get_active_states().keys())
-        
         return {
             'running': self.is_running,
-            'total_legacy_rules': len(self.config.rules),
             'total_state_rules': len(self.config.state_machine.states),
-            'active_legacy_rules': len(active_rules),
+            'total_entry_nodes': len(self.config.entry_nodes),
+            'total_completion_nodes': len(self.config.completion_nodes),
             'active_state_rules': len(active_states),
-            'active_legacy_rule_names': active_rules,
             'active_state_rule_names': active_states,
             'log_source': self.config.log_file_path or 'stdout capture',
             'notification_available': self.config.is_notification_configured()
@@ -298,15 +273,30 @@ class EnhancedLogMonitor:
     def get_detailed_status(self) -> Dict:
         """Get detailed status including state machine details"""
         status = self.get_status()
-        
-        # Add detailed state information
         state_details = {}
         for state_name, state in self.config.state_machine.states.items():
             state_details[state_name] = self.config.state_machine.get_state_status(state_name)
-        
         status['state_details'] = state_details
+        
+        entry_details = {}
+        for entry_name, entry in self.config.entry_nodes.items():
+            entry_details[entry_name] = {
+                'name': entry.name,
+                'node_name': entry.node_name,
+                'description': entry.description
+            }
+        status['entry_details'] = entry_details
+
+        completion_details = {}
+        for comp_name, comp in self.config.completion_nodes.items():
+            completion_details[comp_name] = {
+                'name': comp.name,
+                'node_name': comp.node_name,
+                'description': comp.description
+            }
+        status['completion_details'] = completion_details
+        
         return status
 
-
 # Keep backward compatibility
-LogMonitor = EnhancedLogMonitor
+LogMonitor = LogMonitor

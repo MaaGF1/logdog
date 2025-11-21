@@ -6,6 +6,14 @@ import json
 from typing import Optional
 from datetime import datetime
 
+# Import constants for checking
+from config import (
+    NOTIFY_STATE_ACTIVATED, 
+    NOTIFY_STATE_COMPLETED, 
+    NOTIFY_STATE_TIMEOUT, 
+    NOTIFY_STATE_INTERRUPTED, 
+    NOTIFY_ENTRY_DETECTED
+)
 
 class TelegramNotifier:
     """Telegram notification handler"""
@@ -106,7 +114,8 @@ class WatchdogNotifier:
         available_platforms = self.config.get_available_notifiers()
         
         if not available_platforms:
-            print("Warning: No notification platforms available")
+            # Only print warning if we actually intended to send something but couldn't
+            # print("Warning: No notification platforms available")
             return False
         
         # Determine try order
@@ -140,74 +149,142 @@ class WatchdogNotifier:
         print("Failed to send watchdog notification via all platforms")
         return False
     
+    # Legacy methods for backward compatibility
     def send_timeout_alert(self, rule_name: str, rule, elapsed_ms: float) -> bool:
-        """Send timeout alert notification"""
+        """Send timeout alert notification (legacy support)"""
+        if not self.config.should_notify(NOTIFY_STATE_TIMEOUT):
+            return False
+
         message = (
             f"WATCHDOG TIMEOUT ALERT\n\n"
             f"Rule: {rule_name}\n"
-            f"Description: {rule.description or 'N/A'}\n"
-            f"Start Node: {rule.start_node}\n"
-            f"Expected End Node: {rule.end_node}\n"
-            f"Timeout Threshold: {rule.timeout_ms}ms\n"
+            f"Description: {getattr(rule, 'description', 'N/A')}\n"
+            f"Start Node: {getattr(rule, 'start_node', 'N/A')}\n"
+            f"Expected End Node: {getattr(rule, 'end_node', 'N/A')}\n"
+            f"Timeout Threshold: {getattr(rule, 'timeout_ms', 'N/A')}ms\n"
             f"Elapsed Time: {elapsed_ms:.1f}ms\n"
-            f"Last Start: {rule.last_start_time.strftime('%Y-%m-%d %H:%M:%S') if rule.last_start_time else 'Unknown'}\n"
+            f"Last Start: {getattr(rule, 'last_start_time', datetime.now()).strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"Alert Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         
         return self.send_notification(message)
     
     def send_rule_activated(self, rule_name: str, rule) -> bool:
-        """Send rule activation notification"""
+        """Send rule activation notification (legacy support)"""
+        if not self.config.should_notify(NOTIFY_STATE_ACTIVATED):
+            return False
+
         message = (
             f"WATCHDOG RULE ACTIVATED\n\n"
             f"Rule: {rule_name}\n"
-            f"Description: {rule.description or 'N/A'}\n"
-            f"Start Node: {rule.start_node}\n"
-            f"Timeout: {rule.timeout_ms}ms\n"
+            f"Description: {getattr(rule, 'description', 'N/A')}\n"
+            f"Start Node: {getattr(rule, 'start_node', 'N/A')}\n"
+            f"Timeout: {getattr(rule, 'timeout_ms', 'N/A')}ms\n"
             f"Activation Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         
         return self.send_notification(message)
     
     def send_rule_completed(self, rule_name: str, rule, elapsed_ms: float) -> bool:
-        """Send rule completion notification"""
+        """Send rule completion notification (legacy support)"""
+        if not self.config.should_notify(NOTIFY_STATE_COMPLETED):
+            return False
+
         message = (
             f"WATCHDOG RULE COMPLETED\n\n"
             f"Rule: {rule_name}\n"
-            f"End Node: {rule.end_node}\n"
+            f"End Node: {getattr(rule, 'end_node', 'N/A')}\n"
             f"Elapsed Time: {elapsed_ms:.1f}ms\n"
-            f"Timeout Threshold: {rule.timeout_ms}ms\n"
+            f"Timeout Threshold: {getattr(rule, 'timeout_ms', 'N/A')}ms\n"
             f"Completion Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
         
         return self.send_notification(message)
 
-    def send_state_completed(self, state_name: str, state, node_name: str):
-        """Send state completion notification"""
-        title = f"看门狗状态完成: {state_name}"
+    # New state machine notification methods
+    def send_state_activated(self, state_name: str, state) -> bool:
+        """Send state activation notification"""
+        if not self.config.should_notify(NOTIFY_STATE_ACTIVATED):
+            return False
+
         message = (
-            f"状态规则 '{state_name}' 已完成\n"
-            f"起始节点: {state.start_node}\n"
-            f"完成节点: {node_name}\n"
-            f"描述: {state.description}\n"
-            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"WATCHDOG STATE ACTIVATED\n\n"
+            f"State: {state_name}\n"
+            f"Description: {getattr(state, 'description', 'N/A')}\n"
+            f"Start Node: {getattr(state, 'start_node', 'N/A')}\n"
+            f"Transitions: {len(getattr(state, 'transitions', []))}\n"
+            f"Activation Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
+        
         return self.send_notification(message)
 
-    def send_state_timeout(self, state_name: str, state, elapsed_ms: int):
+    def send_state_completed(self, state_name: str, state, node_name: str) -> bool:
+        """Send state completion notification"""
+        if not self.config.should_notify(NOTIFY_STATE_COMPLETED):
+            return False
+
+        message = (
+            f"WATCHDOG STATE COMPLETED\n\n"
+            f"State: {state_name}\n"
+            f"Start Node: {getattr(state, 'start_node', 'N/A')}\n"
+            f"Completion Node: {node_name}\n"
+            f"Description: {getattr(state, 'description', 'N/A')}\n"
+            f"Completion Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+        return self.send_notification(message)
+
+    def send_state_timeout(self, state_name: str, state, elapsed_ms: int) -> bool:
         """Send state timeout notification"""
-        title = f"看门狗状态超时: {state_name}"
+        if not self.config.should_notify(NOTIFY_STATE_TIMEOUT):
+            return False
+
         current_transition = None
-        if hasattr(state, 'transitions') and state.current_transition_index < len(state.transitions):
-            current_transition = state.transitions[state.current_transition_index]
+        if hasattr(state, 'transitions') and hasattr(state, 'current_transition_index'):
+            if state.current_transition_index < len(state.transitions):
+                current_transition = state.transitions[state.current_transition_index]
         
         message = (
-            f"状态规则 '{state_name}' 超时\n"
-            f"起始节点: {state.start_node}\n"
-            f"当前等待: {current_transition.target_node if current_transition else '未知'}\n"
-            f"超时时间: {current_transition.timeout_ms if current_transition else '未知'}ms\n"
-            f"实际耗时: {elapsed_ms}ms\n"
-            f"描述: {state.description}\n"
-            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            f"WATCHDOG STATE TIMEOUT\n\n"
+            f"State: {state_name}\n"
+            f"Start Node: {getattr(state, 'start_node', 'N/A')}\n"
+            f"Waiting For: {getattr(current_transition, 'target_node', 'Unknown') if current_transition else 'Unknown'}\n"
+            f"Timeout Threshold: {getattr(current_transition, 'timeout_ms', 'Unknown') if current_transition else 'Unknown'}ms\n"
+            f"Elapsed Time: {elapsed_ms}ms\n"
+            f"Description: {getattr(state, 'description', 'N/A')}\n"
+            f"Alert Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         )
+        
+        return self.send_notification(message)
+    
+    def send_state_interrupted(self, state_name: str, state, entry_node: str) -> bool:
+        """Send state interruption notification (when entry node resets states)"""
+        if not self.config.should_notify(NOTIFY_STATE_INTERRUPTED):
+            return False
+
+        message = (
+            f"WATCHDOG STATE INTERRUPTED\n\n"
+            f"State: {state_name}\n"
+            f"Start Node: {getattr(state, 'start_node', 'N/A')}\n"
+            f"Interrupted By: {entry_node}\n"
+            f"Description: {getattr(state, 'description', 'N/A')}\n"
+            f"Interruption Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        
+        return self.send_notification(message)
+    
+    def send_entry_detected(self, entry_name: str, entry, node_name: str) -> bool:
+        """Send entry node detection notification"""
+        if not self.config.should_notify(NOTIFY_ENTRY_DETECTED):
+            return False
+
+        message = (
+            f"WATCHDOG ENTRY NODE DETECTED\n\n"
+            f"Entry: {entry_name}\n"
+            f"Node: {node_name}\n"
+            f"Description: {getattr(entry, 'description', 'N/A')}\n"
+            f"Detection Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+            f"All active states have been reset."
+        )
+        
         return self.send_notification(message)
