@@ -1,3 +1,5 @@
+[![Run](https://img.shields.io/badge/Download%20and%20Run-8CA1AF?logo=readthedocs&logoColor=fff)](01_begin.en.md)
+
 # MaaFramework Watchdog
 
 A log-based monitoring system designed for MaaFramework.

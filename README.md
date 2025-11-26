@@ -1,4 +1,4 @@
-[![English](https://img.shields.io/badge/English-README-blue)](docs/README.en.md)
+[![English](https://img.shields.io/badge/English-README-blue)](docs/README.en.md)   [![Run](https://img.shields.io/badge/下载并运行-8CA1AF?logo=readthedocs&logoColor=fff)](docs/01_begin.md)
 
 # MaaFramework Watchdog
 
