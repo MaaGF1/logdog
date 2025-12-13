@@ -51,7 +51,7 @@ class WatchdogConfig:
         self.entry_nodes: Dict[str, EntryNode] = {}
         self.completion_nodes: Dict[str, CompletionNode] = {}
         
-        # 修复：默认正则同步为严格模式
+        # The default regular expression synchronization mode is strict
         self.log_patterns = {
             'node_start': r'\[pipeline_data\.name=(.*?)\]\s*\|\s*enter',
             'node_complete': r'\[pipeline_data\.name=(.*?)\]\s*\|\s*complete',

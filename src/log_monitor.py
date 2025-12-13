@@ -33,17 +33,17 @@ class LogMonitor:
         self.stop_event = threading.Event()
         
         # Log patterns for node detection
-        # 修复：严格匹配 [pipeline_data.name=...] | enter
+        # Strict matching [pipeline_data.name=...] | enter
         self.node_patterns = {
-            # 优先级最高：严格匹配执行进入点
-            # 格式：[pipeline_data.name=节点名] | enter
+            # Highest priority: Strictly match the entry point
+            # Format: [pipeline_data.name=Name] | enter
             'start': re.compile(r'\[pipeline_data\.name=(.*?)\]\s*\|\s*enter', re.IGNORECASE),
             
-            # 备用：如果日志中有显式的 complete (虽然你提供的日志里 leave 没带名字，但保留以防万一)
+            # Alternative: If the log contains an explicit complete statement
             'complete': re.compile(r'\[pipeline_data\.name=(.*?)\]\s*\|\s*complete', re.IGNORECASE),
             
-            # 兼容旧格式或备用格式 (仅当上面匹配不到时使用)
-            # 这里的正则排除了 list=[...] 和 result.name=... 这种干扰项
+            # Compatible with older or alternative formats (only used if no match is found above)
+            # The regular expression here excludes distractors like list=[...] and result.name=...
             'general': re.compile(r'\[(?:node_name|pipeline_data\.name)=(.*?)\](?!.*(?:list=|result\.name=))', re.IGNORECASE)
         }
         
