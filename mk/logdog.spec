@@ -3,30 +3,46 @@
 
 import sys
 import os
+import glob
 from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 
+# SPECPATH is automatically defined by PyInstaller
 spec_dir = SPECPATH
 src_path = os.path.abspath(os.path.join(spec_dir, '..', 'src'))
 icon_path = os.path.join(spec_dir, 'logdog.ico')
 
-print(f"Spec file location (SPECPATH): {spec_dir}")
-print(f"Source path resolved to: {src_path}")
-print(f"Icon path resolved to: {icon_path}")
+print(f"Spec file location: {spec_dir}")
+print(f"Source path: {src_path}")
 
+# 1. Find the compiled C++ extension (_logdog_core.pyd or .so)
+# It should have been built by SCons into the src directory
+extensions = []
+# Match .pyd (Windows) and .so (Linux)
+found_exts = glob.glob(os.path.join(src_path, '_logdog_core*'))
+for ext in found_exts:
+    if ext.endswith('.pyd') or ext.endswith('.so'):
+        print(f"Found C++ Extension: {ext}")
+        # Tuple format: (Path to file, Destination folder in bundle)
+        extensions.append((ext, '.'))
+
+if not extensions:
+    print("WARNING: No _logdog_core extension found! Did you run SCons?")
+
+# 2. Check Icon
 if not os.path.exists(icon_path):
     print(f"WARNING: Icon file not found at {icon_path}. Build will proceed with default icon.")
     icon_path = None
 
+# 3. Define Main Script
 main_script = os.path.join(src_path, 'main.py')
-if not os.path.exists(main_script):
-    raise FileNotFoundError(f"Cannot find main.py at: {main_script}")
 
+# 4. Analysis
 a = Analysis(
     [main_script],
-    pathex=[src_path],
-    binaries=[],
+    pathex=[src_path], # Important: Add src to path so imports work
+    binaries=extensions, # Include the C++ extension here
     datas=[
         (os.path.join(src_path, 'watchdog.conf'), '.')
     ],
@@ -46,7 +62,7 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(
     pyz,
     a.scripts,
-    [],
+    [], # exclude_binaries=True means we are in onedir mode
     exclude_binaries=True,
     name='logdog',
     debug=False,
@@ -62,6 +78,7 @@ exe = EXE(
     icon=icon_path 
 )
 
+# 5. Collect (Create the folder structure)
 coll = COLLECT(
     exe,
     a.binaries,
@@ -71,4 +88,6 @@ coll = COLLECT(
     upx=True,
     upx_exclude=[],
     name='logdog',
+    # This creates the _internal folder for dependencies
+    contents_directory='_internal' 
 )
