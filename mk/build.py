@@ -4,8 +4,21 @@ import sys
 import subprocess
 import shutil
 
+def run_command(cmd, cwd, env=None):
+    """Helper to run shell commands"""
+    print(f"Executing: {' '.join(cmd)} in {cwd}")
+    # Merge current environment with passed env
+    run_env = os.environ.copy()
+    if env:
+        run_env.update(env)
+        
+    result = subprocess.run(cmd, cwd=cwd, env=run_env, shell=(os.name == 'nt'))
+    if result.returncode != 0:
+        print(f"Error: Command failed with return code {result.returncode}")
+        sys.exit(1)
+
 def build():
-    # Locate the directory
+    # 1. Path Setup
     # mk_dir: .../logdog/mk
     mk_dir = os.path.dirname(os.path.abspath(__file__))
     # root_dir: .../logdog
@@ -14,7 +27,9 @@ def build():
     dist_dir = os.path.join(root_dir, 'dist')
     build_dir = os.path.join(root_dir, 'build')
     
-    # Clean up old build artifacts
+    # 2. Clean previous PyInstaller artifacts
+    # (We don't clean SCons artifacts to speed up incremental builds, 
+    # unless you want to run 'scons -c')
     if os.path.exists(dist_dir):
         print(f"Cleaning {dist_dir}...")
         shutil.rmtree(dist_dir)
@@ -24,24 +39,25 @@ def build():
 
     print(f"Start building from Root: {root_dir}")
 
-    # PyInstaller command
-    cmd = [
+    # 3. Build C++ Core with SCons
+    print("=== Step 1: Building C++ Core with SCons ===")
+    scons_cmd = [sys.executable, "-m", "SCons"]
+    run_command(scons_cmd, cwd=root_dir)
+
+    # 4. Package with PyInstaller
+    print("=== Step 2: Packaging with PyInstaller ===")
+    pyinstaller_cmd = [
         sys.executable, '-m', 'PyInstaller',
         '--clean',
         '--workpath', build_dir,
         '--distpath', dist_dir,
+        '--noconfirm',
         os.path.join(mk_dir, 'logdog.spec')
     ]
-
-    print(f"Executing: {' '.join(cmd)}")
     
-    result = subprocess.run(cmd, cwd=root_dir)
+    run_command(pyinstaller_cmd, cwd=root_dir)
     
-    if result.returncode != 0:
-        print("Build failed!")
-        sys.exit(1)
-    
-    print("Build success!")
+    print("=== Build Success! ===")
     
 if __name__ == '__main__':
     build()
