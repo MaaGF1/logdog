@@ -29,12 +29,10 @@ jobs:
           is_release=${{ startsWith(github.ref, 'refs/tags/v') }}
           tag=$(git describe --tags --match "v*" ${{ github.ref }} || true)
           
-          # If no tag is provided, generate a date-based development version number.
           if [[ $tag != v* ]]; then
             tag="v0.0.0-dev-$(date +%y%m%d)-$(git rev-parse --short HEAD)"
           fi
           
-          # If it is not triggered by a formal release, add the ci suffix.
           if ! $is_release ; then
              tag="${tag}-ci"
           fi
@@ -54,14 +52,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Windows x86_64
           - os: windows-latest
             os_name: Windows
             target_os: win
             arch: x86_64
             use_qemu: false
           
-          # Linux x86_64
           - os: ubuntu-latest
             os_name: Linux
             target_os: linux
@@ -71,7 +67,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # === Standard Build Process (Windows, Linux) ===
       - name: Set up Python
         if: matrix.use_qemu == false
         uses: actions/setup-python@v4
@@ -82,45 +77,49 @@ jobs:
         if: matrix.use_qemu == false
         run: |
           python -m pip install --upgrade pip
-          pip install pyinstaller
-          # Install dependencies from requirements.txt
+          # Install all dependencies including scons, pybind11, pyinstaller
           pip install -r requirements.txt
 
-      - name: Build with PyInstaller
+      - name: Build (SCons + PyInstaller)
         if: matrix.use_qemu == false
         shell: bash
         run: |
+          # This script handles both C++ compilation and Python packaging
           python mk/build.py
 
-      # === Prepare Artifact ===
+      - name: Verify Build Artifacts
+        shell: bash
+        run: |
+          # Check if _internal exists (Windows/Linux structure check)
+          if [ -d "dist/logdog/_internal" ]; then
+            echo "Success: _internal directory found."
+          else
+            echo "Warning: _internal directory not found in dist/logdog!"
+            ls -R dist/logdog
+          fi
+
       - name: Prepare Artifact
         shell: bash
         run: |
-          # Define artifact name based on platform and arch (e.g., logdog-win-x86_64)
           ARTIFACT_NAME="logdog-${{ matrix.target_os }}-${{ matrix.arch }}"
           mkdir -p upload_stage
           
-          # Copy build artifacts to upload directory
-          # Assuming PyInstaller generates a folder named 'logdog' in 'dist'
           if [ -d "dist/logdog" ]; then
             cp -r dist/logdog "upload_stage/$ARTIFACT_NAME"
           else
             echo "Error: Build artifact not found in dist/logdog!"
-            ls -R dist
             exit 1
           fi
           
-          # Add version info
           echo "Version: ${{ needs.meta.outputs.tag }}" > "upload_stage/$ARTIFACT_NAME/version.txt"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          # Name used internally by GitHub Actions to store the file
           name: logdog-${{ matrix.target_os }}-${{ matrix.arch }}
           path: upload_stage
 
-  # 3. Release Job: Release And Upload Assets
+  # 3. Release Job
   release:
     needs: [meta, build]
     if: needs.meta.outputs.is_release == 'true'
@@ -138,20 +137,13 @@ jobs:
           mkdir -p release_assets
           cd artifacts
           
-          # Iterate through each downloaded artifact directory
           for dir in */; do
-            dir=${dir%*/} # remove trailing slash
+            dir=${dir%*/}
             echo "Processing $dir..."
-            
-            # Construct the final zip name: name-os-arch-version.zip
-            # dir is already 'logdog-os-arch', so we just append the tag
             zip_name="${dir}-${{ needs.meta.outputs.tag }}.zip"
-            
-            # Enter directory and zip content
             (cd "$dir" && zip -r "../../release_assets/$zip_name" .)
           done
           
-          echo "Assets to upload:"
           ls -l ../release_assets
 
       - name: Create Release
