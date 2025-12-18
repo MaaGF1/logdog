@@ -15,7 +15,7 @@ PYBIND11_MODULE(_logdog_core, m) {
         .value("Timeout", EventType::Timeout)
         .value("StateInterrupted", EventType::StateInterrupted)
         .value("EntryDetected", EventType::EntryDetected)
-        .value("DebugLog", EventType::DebugLog)
+        .value("EngineLog", EventType::EngineLog)
         .export_values();
 
     py::class_<EventData>(m, "EventData")

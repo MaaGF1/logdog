@@ -34,7 +34,7 @@ enum class EventType {
     Timeout,
     StateInterrupted,
     EntryDetected,
-    DebugLog
+    EngineLog
 };
 
 struct EventData {
