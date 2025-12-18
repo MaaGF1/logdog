@@ -92,9 +92,9 @@ void Engine::run() {
                 {
                     // Send a Debug Event
                     EventData debug_evt;
-                    debug_evt.type = EventType::DebugLog;
+                    debug_evt.type = EventType::EngineLog;
                     debug_evt.node_name = node_name; 
-                    debug_evt.description = "Node Detected";
+                    debug_evt.description = "Node Detected: ";
                     debug_evt.elapsed_ms = 0;
                     callback_(debug_evt);
                 }

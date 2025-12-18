@@ -34,8 +34,20 @@ EVENT_MAP = {
     _logdog_core.EventType.Timeout: "Timeout",
     _logdog_core.EventType.StateInterrupted: "StateInterrupted",
     _logdog_core.EventType.EntryDetected: "EntryDetected",
-    _logdog_core.EventType.DebugLog: "DEBUG",
+    _logdog_core.EventType.EngineLog: "EngineLog",
 }
+
+class TerminalColor:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m' # Reset Clolor
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    GREY = '\033[90m'
 
 def print_logo():
     """
@@ -147,11 +159,13 @@ class WatchdogService:
         e_type_str = EVENT_MAP.get(event_data.type, "Unknown")
 
         # Special handling for C++ engine debug output
-        if e_type_str == "DEBUG":
-            print(f"[DEBUG] {event_data.node_name}")
+        if e_type_str == "EngineLog":
+            msg = f"[Engine] {event_data.description}{event_data.node_name}"
+            print(f"{TerminalColor.CYAN}{msg}{TerminalColor.ENDC}")
             return
 
-        print(f"[EVENT] {e_type_str} - {event_data.state_name}")
+        # Normal event output
+        print(f"{TerminalColor.GREEN}[EVENT] {e_type_str} - {event_data.state_name}{TerminalColor.ENDC}")
         
         context = {
             "state_name": event_data.state_name,
@@ -221,7 +235,7 @@ class WatchdogService:
         
         if self.engine:
             self.engine.stop()
-        
+
         print("Watchdog service stop signal sent")
 
     def print_config_summary(self):
