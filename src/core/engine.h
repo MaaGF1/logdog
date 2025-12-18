@@ -4,6 +4,8 @@
 #include <functional>
 #include <regex>
 #include <atomic>
+#include <mutex>
+#include <condition_variable>
 
 namespace logdog {
 
@@ -33,6 +35,9 @@ private:
     EventCallback callback_;
     std::atomic<bool> running_;
     
+    std::mutex cv_m_;
+    std::condition_variable cv_;
+
     std::regex pattern_start_;
     std::regex pattern_complete_;
     std::regex pattern_general_;

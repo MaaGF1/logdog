@@ -42,6 +42,7 @@ void Engine::set_callback(EventCallback cb) {
 
 void Engine::stop() {
     running_ = false;
+    cv_.notify_all();
 }
 
 void Engine::run() {
@@ -112,7 +113,10 @@ void Engine::run() {
         }
 
         // 3. Sleep
-        std::this_thread::sleep_for(std::chrono::milliseconds(static_cast<int>(interval_sec_ * 1000)));
+        std::unique_lock<std::mutex> lk(cv_m_);
+        cv_.wait_for(lk, std::chrono::milliseconds(static_cast<int>(interval_sec_ * 1000)), [this]{
+            return !running_; 
+        });
     }
     
     reader.close();
