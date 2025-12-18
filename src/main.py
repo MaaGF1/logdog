@@ -163,15 +163,15 @@ class WatchdogService:
             print(f"{TerminalColor.CYAN}[Engine]{TerminalColor.ENDC} {event_data.description}{event_data.node_name}")
             return
         # Normal event output
-        else if e_type_str == "StateActivated":
+        elif e_type_str == "StateActivated":
             print(f"{TerminalColor.GREEN}[Activated]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        else if e_type_str == "StateCompleted":
+        elif e_type_str == "StateCompleted":
             print(f"{TerminalColor.GREEN}[Completed]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        else if e_type_str == "Timeout":
+        elif e_type_str == "Timeout":
             print(f"{TerminalColor.WARNING}[Timeout]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        else if e_type_str == "StateInterrupted":
+        elif e_type_str == "StateInterrupted":
             print(f"{TerminalColor.GREEN}[Interrupted]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        else if e_type_str == "EntryDetected":
+        elif e_type_str == "EntryDetected":
             print(f"{TerminalColor.GREEN}[Entry]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
         else:
             print(f"[Event]{e_type_str} - {event_data.state_name}")
