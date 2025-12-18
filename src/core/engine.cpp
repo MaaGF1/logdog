@@ -85,7 +85,18 @@ void Engine::run() {
                 node_name.erase(node_name.find_last_not_of(" \t\r\n") + 1);
 
                 // For Debug
-                std::cout << "[DEBUG] Detected node execution: " << node_name << std::endl;
+                // std::cout << "[DEBUG] Detected node execution: " << node_name << std::endl;
+
+                if (callback_)
+                {
+                    // Send a Debug Event
+                    EventData debug_evt;
+                    debug_evt.type = EventType::DebugLog;
+                    debug_evt.node_name = node_name; 
+                    debug_evt.description = "Node Detected";
+                    debug_evt.elapsed_ms = 0;
+                    callback_(debug_evt);
+                }
 
                 auto events = sm_.process_node(node_name);
                 if (callback_) {

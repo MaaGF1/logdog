@@ -23,6 +23,7 @@ EVENT_MAP = {
     _logdog_core.EventType.Timeout: "Timeout",
     _logdog_core.EventType.StateInterrupted: "StateInterrupted",
     _logdog_core.EventType.EntryDetected: "EntryDetected",
+    _logdog_core.EventType.DebugLog: "DEBUG",
 }
 
 class App:
@@ -70,6 +71,12 @@ class App:
 
     def on_event(self, event_data):
         e_type_str = EVENT_MAP.get(event_data.type, "Unknown")
+
+        # Special handling for C++ engine debug output (Not use cout, but output via python to avoid UTF8, GBK... issue)
+        if e_type_str == "DEBUG":
+            print(f"[DEBUG] Detected node execution: {event_data.node_name}")
+            return
+
         print(f"[EVENT] {e_type_str} - {event_data.state_name}")
         
         context = {
