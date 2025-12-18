@@ -7,6 +7,7 @@ import sys
 import time
 import signal
 import argparse
+import threading
 from datetime import datetime
 
 # Ensure we can find the C++ module (it will be in same dir after build)
@@ -174,34 +175,54 @@ class WatchdogService:
         # 2. Print Logo
         print_logo()
         
-        # 3. Start Engine
+        # 3. Start Engine in a separate thread
         print(f"Starting C++ Engine at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         print("Press Ctrl+C to stop")
         print("-" * 60)
         
+        engine_thread = threading.Thread(target=self._run_engine_thread, name="CppEngineThread")
+        engine_thread.start()
+        
         try:
-            # Blocking call (releases GIL internally in C++)
-            self.engine.run() 
+            # Main thread into a loop
+            while self.running and engine_thread.is_alive():
+                time.sleep(0.5)
+                
         except KeyboardInterrupt:
             print("\nKeyboard interrupt received")
-        except Exception as e:
-            print(f"Runtime error: {e}")
-        finally:
             self.shutdown()
+        except Exception as e:
+            print(f"Runtime error in main loop: {e}")
+            self.shutdown()
+        finally:
+            # Wait engine thread finish
+            if engine_thread.is_alive():
+                engine_thread.join(timeout=2.0)
+                if engine_thread.is_alive():
+                    print("Warning: C++ Engine thread did not exit cleanly.")
         
         return True
+
+    def _run_engine_thread(self):
+        """Wrapper to run the C++ engine in a thread"""
+        try:
+            self.engine.run()
+        except Exception as e:
+            print(f"Error in C++ Engine thread: {e}")
+            self.running = False
     
     def shutdown(self):
         """Shutdown watchdog service"""
         if not self.running:
             return
-        
+
         print("Shutting down watchdog service...")
+        self.running = False
+        
         if self.engine:
             self.engine.stop()
         
-        self.running = False
-        print("Watchdog service stopped")
+        print("Watchdog service stop signal sent")
 
     def print_config_summary(self):
         """Print summary of loaded configuration"""
