@@ -154,29 +154,71 @@ class WatchdogService:
             print(f"Failed to create C++ Engine: {e}")
             return False
 
+    def log_message(self, tag: str, message: str):
+        """
+        Centralized logging function.
+        Handles timestamping, coloring based on tag, and printing.
+        """
+        # 1. Define Color Mapping (Style Configuration)
+        # This keeps the style logic separate from the event logic
+        tag_style_map = {
+            "Engine": TerminalColor.CYAN,
+            "Activated": TerminalColor.GREEN,
+            "Completed": TerminalColor.GREEN,
+            "Interrupted": TerminalColor.WARNING,
+            "Entry": TerminalColor.BLUE,
+            "Timeout": TerminalColor.FAIL,
+            "Event": TerminalColor.ENDC
+        }
+
+        # 2. Get color, default to empty if not found
+        color_code = tag_style_map.get(tag, TerminalColor.ENDC)
+        reset_code = TerminalColor.ENDC
+
+        # 3. Get Timestamp
+        time_str = datetime.now().strftime("[%H:%M:%S]")
+
+        # 4. Format and Print: [Time][Color][Tag][Reset] Message
+        # Example: [12:00:01][\033..][Timeout][\033..] State - Gray_Zone
+        print(f"{time_str}{color_code}[{tag}]{reset_code} {message}")
+
     def on_event(self, event_data):
         """Callback from C++ Engine"""
         e_type_str = EVENT_MAP.get(event_data.type, "Unknown")
 
-        # Special handling for C++ engine debug output
+        # 1. Dispatch Logic: Decide WHAT to log based on event type
         if e_type_str == "EngineLog":
-            print(f"{TerminalColor.CYAN}[Engine]{TerminalColor.ENDC} {event_data.description}{event_data.node_name}")
-            return
-        # Normal event output
-        elif e_type_str == "StateActivated":
-            print(f"{TerminalColor.GREEN}[Activated]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        elif e_type_str == "StateCompleted":
-            print(f"{TerminalColor.GREEN}[Completed]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        elif e_type_str == "Timeout":
-            print(f"{TerminalColor.WARNING}[Timeout]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        elif e_type_str == "StateInterrupted":
-            print(f"{TerminalColor.GREEN}[Interrupted]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        elif e_type_str == "EntryDetected":
-            print(f"{TerminalColor.GREEN}[Entry]{TerminalColor.ENDC} {e_type_str} - {event_data.state_name}")
-        else:
-            print(f"[Event]{e_type_str} - {event_data.state_name}")
+            # Special handling for C++ engine debug output
+            # Assuming description contains the text and node_name contains extra info
+            msg = f"{event_data.description}{event_data.node_name}"
+            self.log_message("Engine", msg)
 
-        
+        elif e_type_str == "StateActivated":
+            msg = f"{e_type_str} - {event_data.state_name}"
+            self.log_message("Activated", msg)
+
+        elif e_type_str == "StateCompleted":
+            msg = f"{e_type_str} - {event_data.state_name}"
+            self.log_message("Completed", msg)
+
+        elif e_type_str == "Timeout":
+            msg = f"{e_type_str} - {event_data.state_name}"
+            self.log_message("Timeout", msg)
+
+        elif e_type_str == "StateInterrupted":
+            msg = f"{e_type_str} - {event_data.state_name}"
+            self.log_message("Interrupted", msg)
+
+        elif e_type_str == "EntryDetected":
+            msg = f"{e_type_str} - {event_data.state_name}"
+            self.log_message("Entry", msg)
+
+        else:
+            # Fallback for unknown events
+            msg = f"{e_type_str} - {event_data.state_name}"
+            self.log_message("Event", msg)
+
+        # 2. Action Logic: Execute actions (Notifications, Scripts, etc.)
         context = {
             "state_name": event_data.state_name,
             "node_name": event_data.node_name,
@@ -184,7 +226,9 @@ class WatchdogService:
             "elapsed_ms": event_data.elapsed_ms
         }
         
-        self.action_mgr.execute_actions(e_type_str, context)
+        # Ensure action_mgr exists before calling
+        if self.action_mgr:
+            self.action_mgr.execute_actions(e_type_str, context)
     
     def run(self) -> bool:
         """Run watchdog service (blocking)"""
