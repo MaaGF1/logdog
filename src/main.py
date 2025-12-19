@@ -1,7 +1,5 @@
-"""
-MaaFramework Watchdog - Main Entry Point (Hybrid C++/Python)
-Independent log-based watchdog for monitoring MaaFw agent execution
-"""
+# src/main.py
+
 import os
 import sys
 import time
