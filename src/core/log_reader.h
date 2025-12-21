@@ -16,6 +16,7 @@ private:
     std::string path_;
     std::ifstream file_;
     std::streampos last_pos_;
+    bool initialized_;
 };
 
 }
