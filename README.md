@@ -16,6 +16,9 @@ Logdog 通过实时分析日志文件来监控 MaaFramework Pipeline 的执行�
     * Telegram Bot
     * 企业微信
 * 自定义警报: 筛选触发通知的事件类型，例如: 仅在超时发生时报警。
+* 自定义Action:
+    * 外部通知
+    * 自动关机
 
 ## 二、使用源码
 
@@ -34,9 +37,12 @@ cd logdog
 2.  安装依赖: 
 
 唯一的外部依赖是用于发送通知的 `requests` 库: 
+
 ```bash
 pip install requests
 ```
+
+同时，`src/core`中的日志读取采用C++实现，并且使用`scons`进行构建。
 
 ## 三、配置说明
 
@@ -97,9 +103,9 @@ Monitor_Interval=1.0
 # 简单规则: 如果出现 'StartTask'，则 'EndTask' 必须在 30秒内出现
 Simple_Task={StartTask, 30000, EndTask, "基础任务监控"}
 
-# 复杂链条: StartNode -> (5s) -> SwitchNode1
+# 复杂链条: StartNode -> (10s) -> SwitchNode1
 #               (or) -> (10s) -> SwitchNode2
-Complex_Flow={StartNode, 5000, SwitchNode1, 10000, SwitchNode2, "复杂流程链"}
+Complex_Flow={StartNode, 10000, SwitchNode1, 10000, SwitchNode2, "复杂流程链"}
 ```
 
 #### 入口节点 (`[Entries]`)
@@ -129,6 +135,9 @@ Task_Done={Task_Success_Node, "任务成功完成"}
 运行主脚本。它将阻塞并无限期地监控日志文件。
 
 ```bash
+# 构建C++程序
+scons
+# 运行主程序
 python main.py
 ```
 
@@ -136,8 +145,6 @@ python main.py
 
 * `--config <path>`: 指定自定义配置文件路径。
 * `--status`: 打印状态机的当前状态并退出。
-* `--detailed-status`: 打印关于活动状态、转移和计时器的详细信息。
-* `--daemon`: (Linux) 在后台模式运行。
 
 示例:
 

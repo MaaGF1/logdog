@@ -16,6 +16,9 @@ Logdog monitors MaaFramework Pipeline execution flow by analyzing log files in r
     * Telegram Bot
     * WeChat Work
 * Custom alerts: Filter event types that trigger notifications, e.g.: alert only when timeouts occur.
+* Custom action:
+    * External notifications
+    * Auto shutdown
 
 ## 2. Using Source Code
 
@@ -34,9 +37,12 @@ cd logdog
 2. Install dependencies: 
 
 The only external dependency is the `requests` library for sending notifications: 
+
 ```bash
 pip install requests
 ```
+
+Meanwhile, the log reading in `src/core` is implemented in C++ and built using `scons`.
 
 ## 3. Configuration
 
@@ -97,9 +103,9 @@ Format: `RuleName={StartNode, TimeoutMS, NextNode, [TimeoutMS, NextNode...], Des
 # Simple rule: If 'StartTask' appears, 'EndTask' must appear within 30 seconds
 Simple_Task={StartTask, 30000, EndTask, "Basic task monitoring"}
 
-# Complex chain: StartNode -> (5s) -> SwitchNode1
-#               (or) -> (10s) -> SwitchNode2
-Complex_Flow={StartNode, 5000, SwitchNode1, 10000, SwitchNode2, "Complex flow chain"}
+# Complex chain: StartNode -> (10s) -> SwitchNode1
+#                     (or) -> (10s) -> SwitchNode2
+Complex_Flow={StartNode, 10000, SwitchNode1, 10000, SwitchNode2, "Complex flow chain"}
 ```
 
 #### Entry Nodes (`[Entries]`)
@@ -129,6 +135,9 @@ Task_Done={Task_Success_Node, "Task completed successfully"}
 Run the main script. It will block and monitor the log file indefinitely.
 
 ```bash
+# Build C++ program
+scons
+# Run main program
 python main.py
 ```
 
@@ -136,8 +145,6 @@ python main.py
 
 * `--config <path>`: Specify custom configuration file path.
 * `--status`: Print current state of the state machine and exit.
-* `--detailed-status`: Print detailed information about active states, transitions and timers.
-* `--daemon`: (Linux) Run in background mode.
 
 Example:
 
