@@ -4,14 +4,14 @@
 
 A log-based monitoring system designed for MaaFramework.
 
-Logdog monitors MaaFramework Pipeline execution flow by analyzing log files in real-time. It uses configurable state machines to track task node transitions, detect timeouts, and send alerts via external notifications when operations fail to complete within expected timeframes.
+Logdog monitors MaaFramework Pipeline execution flow by analyzing log files in real-time. It uses a configurable graph-based state machine to track task node transitions, detect timeouts, and send alerts via external notifications when operations fail to complete within expected timeframes.
 
 ## 1. Features
 
 * Non-intrusive monitoring: Monitors agents through `debug/maa.log` file without process memory injection.
-* Complex state machines: Supports multi-step state transitions, e.g.: `Start -> Step 1 -> Step 2 -> End`.
-* Timeout detection: Automatically sends alerts if specific nodes or transition steps exceed defined thresholds.
-* Entry node detection: Automatically resets currently active states when a new task cycle begins (entry node).
+* Graph-based State Machine: Supports single-state multi-branch logic, automatically merging rules sharing the same start node (e.g., `Start -> Branch A` or `Start -> Branch B`).
+* Smart Timeout Detection: Dynamically calculates the minimum timeout threshold based on all potential outgoing edges of the current node.
+* Entry node detection: Automatically resets currently active states when a new task cycle begins (entry node) to prevent logic errors.
 * Multi-platform notifications: 
     * Telegram Bot
     * WeChat Work
@@ -42,7 +42,13 @@ The only external dependency is the `requests` library for sending notifications
 pip install requests
 ```
 
-Meanwhile, the log reading in `src/core` is implemented in C++ and built using `scons`.
+3. Build C++ Core:
+
+The core logic is implemented in C++ and requires `scons` to build. Ensure a C++ compiler and SCons are installed.
+
+```bash
+scons
+```
 
 ## 3. Configuration
 
@@ -94,23 +100,28 @@ Monitor_Interval=1.0
 #### State Rules (`[States]`)
 Format: `RuleName={StartNode, TimeoutMS, NextNode, [TimeoutMS, NextNode...], Description}`
 
-* StartNode: Node name that appears in the log to start the timer.
-* TimeoutMS: Allowed time to reach the next node (milliseconds).
-* NextNode: Expected node to stop the timer or move to the next step.
+The system parses all rules into a state graph. If multiple rules start with the same node, they are treated as different branches from that node.
+
+* StartNode: The name of the node currently active.
+* TimeoutMS: Allowed time to reach the next node. **Note: If a node has multiple branches, the system uses the minimum timeout among all branches as the threshold.**
+* NextNode: The expected target node.
 
 ```ini
 [States]
-# Simple rule: If 'StartTask' appears, 'EndTask' must appear within 30 seconds
+# Simple linear rule: StartTask -> (30s) -> EndTask
 Simple_Task={StartTask, 30000, EndTask, "Basic task monitoring"}
 
-# Complex chain: StartNode -> (10s) -> SwitchNode1
-#                     (or) -> (10s) -> SwitchNode2
-Complex_Flow={StartNode, 10000, SwitchNode1, 10000, SwitchNode2, "Complex flow chain"}
+# Branching logic example:
+# When at 'DecisionNode', if 'BranchA' is detected within 10s, take path A;
+# If 'BranchB' is detected, take path B.
+# If neither A nor B appears within 10s, a timeout is triggered.
+Flow_Path_A={DecisionNode, 10000, BranchA, "Flow Path A"}
+Flow_Path_B={DecisionNode, 10000, BranchB, "Flow Path B"}
 ```
 
 #### Entry Nodes (`[Entries]`)
 
-Nodes that mark the beginning of major workflows. When such nodes are detected, all currently active states/timers are reset (considered interrupted).
+Nodes that mark the beginning of major workflows. When such nodes are detected, the state machine performs a hard reset and starts tracking from this node. This handles unexpected restarts or manual interventions.
 
 ```ini
 [Entries]
@@ -120,7 +131,7 @@ Main_Entry={Task_Start_Node, "Main task entry point"}
 
 #### Completion Nodes (`[Completed]`)
 
-Nodes that explicitly mark rules as successfully completed.
+Nodes that explicitly mark the process as successfully finished. Upon reaching this node, the state machine stops the timer and resets the state.
 
 ```ini
 [Completed]
@@ -135,16 +146,14 @@ Task_Done={Task_Success_Node, "Task completed successfully"}
 Run the main script. It will block and monitor the log file indefinitely.
 
 ```bash
-# Build C++ program
-scons
-# Run main program
+# Ensure scons build is complete
 python main.py
 ```
 
 ### 4.2 Command Line Arguments
 
 * `--config <path>`: Specify custom configuration file path.
-* `--status`: Print current state of the state machine and exit.
+* `--status`: Print current configuration summary and exit.
 
 Example:
 
@@ -154,9 +163,12 @@ python main.py --config ./my_configs/watchdog.conf
 
 ## 5. How it works
 
-1. Log parsing: `LogMonitor` reads new lines from `maa.log`. It looks for patterns like `[pipeline_data.name=NodeName] | enter`.
-2. State activation: If a detected node matches a `StartNode` in `[States]`, a new `WatchdogState` is activated and timing begins.
-3. Transition/completion: 
-    * If the target node appears within the time limit, the rule is marked as Completed (or moves to the next step).
-    * If the time limit has passed, a Timeout event is triggered.
-4. Notification: Based on `NotifyWhen` settings, `WatchdogNotifier` sends alerts to configured platforms.
+1. **Log Parsing**: The C++ core reads `maa.log` in real-time, extracting nodes via regex patterns like `[pipeline_data.name=NodeName] | enter`.
+2. **State Transition**: 
+    * The system maintains a single "Current Node" pointer.
+    * When a new node is detected, the system checks if it is a valid "Next Hop" from the current node (based on configured rules).
+    * If matched, the system updates the "Current Node" and resets the timer.
+3. **Timeout Mechanism**: 
+    * Upon entering a new node, the system calculates the **shortest** timeout among all possible outgoing paths.
+    * If no valid transition occurs within this time limit, a `Timeout` event is triggered.
+4. **Notification**: The Python layer receives events from C++ and sends alerts to configured platforms based on `NotifyWhen` settings.
