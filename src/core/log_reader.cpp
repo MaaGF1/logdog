@@ -1,6 +1,6 @@
 #include "log_reader.h"
 #include <iostream>
-#include <filesystem> // 需要 C++17
+#include <filesystem>
 #include <thread>
 
 namespace logdog {

@@ -20,10 +20,8 @@ void Engine::add_state_rule(const std::string& name, const std::string& start_no
     config.name = name;
     config.start_node = start_node;
     config.description = desc;
-    
-    for (const auto& p : trans_pairs) {
-        config.transitions.push_back({p.first, p.second});
-    }
+    config.transitions = trans_pairs;
+
     sm_.add_state_config(config);
 }
 

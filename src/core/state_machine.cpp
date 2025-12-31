@@ -1,12 +1,34 @@
 #include "state_machine.h"
 #include <iostream>
+#include <algorithm>
+#include <limits>
 
 namespace logdog {
 
-StateMachine::StateMachine() {}
+StateMachine::StateMachine() 
+    : is_active_(false), current_timeout_threshold_(-1) {}
 
 void StateMachine::add_state_config(const StateConfig& config) {
-    configs_[config.name] = config;
+    // Flatten the linear rule into graph edges
+    // Rule: Start -> (T1, Node1) -> (T2, Node2) ...
+    
+    std::string current_source = config.start_node;
+    
+    for (const auto& trans : config.transitions) {
+        const std::string& target = trans.first;
+        int timeout = trans.second;
+
+        GraphEdge edge;
+        edge.target_node = target;
+        edge.timeout_ms = timeout;
+        edge.rule_name = config.name;
+        edge.description = config.description;
+
+        adjacency_list_[current_source].push_back(edge);
+
+        // Move source forward
+        current_source = target;
+    }
 }
 
 void StateMachine::set_completion_nodes(const std::unordered_set<std::string>& nodes) {
@@ -17,72 +39,117 @@ void StateMachine::add_entry_node(const std::string& node_name, const std::strin
     entry_nodes_[node_name] = {name, desc};
 }
 
+void StateMachine::reset_state() {
+    is_active_ = false;
+    current_node_.clear();
+    current_timeout_threshold_ = -1;
+}
+
+int StateMachine::calculate_min_timeout(const std::string& node_name) {
+    if (adjacency_list_.find(node_name) == adjacency_list_.end()) {
+        return -1; // No outgoing transitions, no timeout
+    }
+    
+    const auto& edges = adjacency_list_[node_name];
+    if (edges.empty()) return -1;
+
+    int min_t = std::numeric_limits<int>::max();
+    for (const auto& edge : edges) {
+        if (edge.timeout_ms < min_t) {
+            min_t = edge.timeout_ms;
+        }
+    }
+    return min_t;
+}
+
+void StateMachine::transition_to(const std::string& node_name, const std::chrono::steady_clock::time_point& now) {
+    current_node_ = node_name;
+    last_transition_time_ = now;
+    is_active_ = true;
+    current_timeout_threshold_ = calculate_min_timeout(node_name);
+}
+
 std::vector<EventData> StateMachine::process_node(const std::string& node_name) {
     std::vector<EventData> events;
     auto now = std::chrono::steady_clock::now();
 
-    // 1. Check Entry Nodes (High Priority)
+    // 1. Check Entry Nodes (Highest Priority - Hard Reset)
     if (entry_nodes_.count(node_name)) {
-        if (!active_states_.empty()) {
-            for (const auto& pair : active_states_) {
-                events.push_back({EventType::StateInterrupted, pair.first, node_name, configs_[pair.first].description, 0});
-            }
-            active_states_.clear();
+        if (is_active_) {
+            events.push_back({EventType::StateInterrupted, 
+                              "Global", 
+                              node_name, 
+                              "Interrupted by Entry: " + entry_nodes_[node_name].name, 
+                              0});
         }
-        events.push_back({EventType::EntryDetected, entry_nodes_[node_name].name, node_name, entry_nodes_[node_name].desc, 0});
+        
+        // Reset and Start fresh
+        reset_state();
+        transition_to(node_name, now);
+        
+        events.push_back({EventType::EntryDetected, 
+                          entry_nodes_[node_name].name, 
+                          node_name, 
+                          entry_nodes_[node_name].desc, 
+                          0});
+        return events;
     }
 
-    // 2. Check New Activations
-    for (const auto& pair : configs_) {
-        const auto& config = pair.second;
-        if (config.start_node == node_name) {
-            ActiveState active;
-            active.name = config.name;
-            active.current_transition_idx = 0;
-            active.last_activation = now;
-            active_states_[config.name] = active;
-            
-            events.push_back({EventType::StateActivated, config.name, node_name, config.description, 0});
+    // 2. If we are not tracking anything, check if this node starts any known path
+    //    (In the graph model, this means checking if it exists as a key in adjacency_list_)
+    if (!is_active_) {
+        // If this node is a known source of transitions, we start tracking
+        if (adjacency_list_.count(node_name)) {
+            transition_to(node_name, now);
+            events.push_back({EventType::StateActivated, 
+                              "AutoStart", 
+                              node_name, 
+                              "Monitoring started from node", 
+                              0});
+        }
+        return events;
+    }
+
+    // 3. We are active. Check if the new node is a valid transition from current_node_
+    if (adjacency_list_.count(current_node_)) {
+        const auto& edges = adjacency_list_[current_node_];
+        
+        for (const auto& edge : edges) {
+            if (edge.target_node == node_name) {
+                // MATCH FOUND!
+                auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_transition_time_).count();
+                
+                // Log completion of previous step
+                events.push_back({EventType::StateCompleted, 
+                                  edge.rule_name, 
+                                  current_node_, 
+                                  "Transition to " + node_name, 
+                                  (int)elapsed});
+
+                // Move state
+                transition_to(node_name, now);
+
+                // Log activation of new step (context)
+                events.push_back({EventType::StateActivated, 
+                                  edge.rule_name, 
+                                  node_name, 
+                                  edge.description, 
+                                  0});
+                
+                return events; // Only take the first matching transition
+            }
         }
     }
 
-    // 3. Check Transitions for Active States
-    // We iterate a copy of keys to safely modify the map
-    std::vector<std::string> active_names;
-    for(const auto& pair : active_states_) active_names.push_back(pair.first);
-
-    for (const auto& name : active_names) {
-        if (active_states_.find(name) == active_states_.end()) continue; // Already removed
-
-        auto& active = active_states_[name];
-        const auto& config = configs_[name];
-
-        if (active.current_transition_idx >= config.transitions.size()) continue;
-
-        const auto& transition = config.transitions[active.current_transition_idx];
-
-        if (transition.target_node == node_name) {
-            // Transition matched
-            bool is_last = (active.current_transition_idx == config.transitions.size() - 1);
-            bool is_explicit_complete = (completion_nodes_.count(node_name) > 0);
-            bool is_loop = (node_name == config.start_node);
-
-            if (is_last) {
-                if (is_explicit_complete || !is_loop) {
-                    // Completed
-                    events.push_back({EventType::StateCompleted, name, node_name, config.description, 0});
-                    active_states_.erase(name);
-                } else {
-                    // Loop reset
-                    active.current_transition_idx = 0;
-                    active.last_activation = now;
-                }
-            } else {
-                // Next step
-                active.current_transition_idx++;
-                active.last_activation = now;
-            }
-        }
+    // 4. If no transition matched, we check if it's a Completion Node (End of line)
+    if (completion_nodes_.count(node_name)) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_transition_time_).count();
+        events.push_back({EventType::StateCompleted, 
+                          "Final", 
+                          node_name, 
+                          "Reached completion node", 
+                          (int)elapsed});
+        reset_state();
     }
 
     return events;
@@ -90,27 +157,31 @@ std::vector<EventData> StateMachine::process_node(const std::string& node_name) 
 
 std::vector<EventData> StateMachine::check_timeouts() {
     std::vector<EventData> events;
-    auto now = std::chrono::steady_clock::now();
-    std::vector<std::string> to_remove;
-
-    for (auto& pair : active_states_) {
-        const auto& name = pair.first;
-        auto& active = pair.second;
-        const auto& config = configs_[name];
-
-        if (active.current_transition_idx < config.transitions.size()) {
-            int timeout_threshold = config.transitions[active.current_transition_idx].timeout_ms;
-            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - active.last_activation).count();
-
-            if (elapsed > timeout_threshold) {
-                events.push_back({EventType::Timeout, name, "TIMEOUT", config.description, (int)elapsed});
-                to_remove.push_back(name);
-            }
-        }
+    
+    if (!is_active_ || current_timeout_threshold_ < 0) {
+        return events;
     }
 
-    for (const auto& name : to_remove) {
-        active_states_.erase(name);
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_transition_time_).count();
+
+    if (elapsed > current_timeout_threshold_) {
+        // Construct a helpful message about what we were waiting for
+        std::string waiting_for = "";
+        if (adjacency_list_.count(current_node_)) {
+            for (const auto& edge : adjacency_list_[current_node_]) {
+                waiting_for += edge.target_node + " ";
+            }
+        }
+
+        events.push_back({EventType::Timeout, 
+                          "Watchdog", 
+                          current_node_, 
+                          "Timed out waiting for: [" + waiting_for + "]", 
+                          (int)elapsed});
+        
+        // Reset state on timeout to prevent stale monitoring
+        reset_state();
     }
 
     return events;
